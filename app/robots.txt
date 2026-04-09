@@ -1,0 +1,9 @@
+# *
+User-agent: *
+Allow: /
+
+# Host
+Host: https://qojim-cinema.vercel.app
+
+# Sitemaps
+Sitemap: https://qojim-cinema.vercel.app/sitemap.xml
