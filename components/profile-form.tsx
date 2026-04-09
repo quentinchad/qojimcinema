@@ -9,18 +9,23 @@ import { Label } from "@/components/ui/label"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { User, Mail, Check, X } from "lucide-react"
+import { User, Mail, Check, X, Bell, BellOff } from "lucide-react"
 
 interface ProfileFormProps {
   user: any
+  newsletterEnabled: boolean
 }
 
-export function ProfileForm({ user }: ProfileFormProps) {
+export function ProfileForm({ user, newsletterEnabled: initialNewsletter }: ProfileFormProps) {
   const [username, setUsername] = useState(user?.username || "")
   const [isEditing, setIsEditing] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+
+  const [newsletter, setNewsletter] = useState(initialNewsletter)
+  const [isUpdatingNewsletter, setIsUpdatingNewsletter] = useState(false)
+
   const router = useRouter()
   const supabase = createClient()
 
@@ -37,18 +42,15 @@ export function ProfileForm({ user }: ProfileFormProps) {
     setIsSubmitting(true)
 
     try {
-      // Mettre à jour le nom d'utilisateur dans la base de données
       const { error: updateError } = await supabase.from("users").update({ username }).eq("id", user.id)
 
       if (updateError) {
         if (updateError.code === "23505") {
-          // Code d'erreur pour violation de contrainte unique
           throw new Error("Ce nom d'utilisateur est déjà utilisé")
         }
         throw updateError
       }
 
-      // Mettre à jour les métadonnées de l'utilisateur dans auth
       const { error: authUpdateError } = await supabase.auth.updateUser({
         data: { username },
       })
@@ -64,6 +66,29 @@ export function ProfileForm({ user }: ProfileFormProps) {
       setError(error.message || "Une erreur est survenue lors de la mise à jour du profil")
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  const handleNewsletterToggle = async () => {
+    setIsUpdatingNewsletter(true)
+    setError(null)
+
+    const newValue = !newsletter
+
+    try {
+      const { error: upsertError } = await supabase
+        .from("profiles")
+        .upsert({ id: user.id, newsletter: newValue }, { onConflict: "id" })
+
+      if (upsertError) throw upsertError
+
+      setNewsletter(newValue)
+      setSuccess(newValue ? "Newsletter réactivée ✓" : "Newsletter désactivée ✓")
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err: any) {
+      setError(err.message || "Erreur lors de la mise à jour de la newsletter")
+    } finally {
+      setIsUpdatingNewsletter(false)
     }
   }
 
@@ -160,6 +185,41 @@ export function ProfileForm({ user }: ProfileFormProps) {
             </div>
           )}
         </form>
+
+        {/* Newsletter toggle */}
+        <div className="pt-2 border-t border-gray-200 dark:border-gray-800">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {newsletter ? (
+                <Bell className="h-4 w-4 text-blue-500" />
+              ) : (
+                <BellOff className="h-4 w-4 text-gray-400" />
+              )}
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">Newsletter</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {newsletter
+                    ? "Vous recevez les nouvelles critiques par email"
+                    : "Vous ne recevez pas les emails"}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={newsletter}
+              onClick={handleNewsletterToggle}
+              disabled={isUpdatingNewsletter}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50
+                ${newsletter ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-700"}`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                  ${newsletter ? "translate-x-6" : "translate-x-1"}`}
+              />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

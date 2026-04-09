@@ -1,11 +1,10 @@
 "use client"
 
-import { useState, useEffect, useMemo, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Star } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation"
-import { useApiCache } from "@/hooks/use-api-cache"
 import { OptimizedImage } from "@/components/optimized-image"
 
 interface RelatedReviewsProps {
@@ -14,234 +13,150 @@ interface RelatedReviewsProps {
   currentMovieGenres?: number[]
 }
 
+const QOJIM_USER_ID = "bc6efc17-35eb-4a59-af6c-8c4e3fcddf86"
+
+// Cache en mémoire pour les genres TMDB (évite les re-fetch dans la même session)
+const genreCache: Record<string, number[]> = {}
+
+async function fetchMovieGenres(movieId: string): Promise<number[]> {
+  if (genreCache[movieId]) return genreCache[movieId]
+
+  try {
+    const res = await fetch(`/api/tmdb/movie-details/${movieId}`)
+    if (!res.ok) return []
+    const data = await res.json()
+    const genres = (data?.genres || []).map((g: any) => g.id)
+    genreCache[movieId] = genres
+    return genres
+  } catch {
+    return []
+  }
+}
+
+function genreOverlapScore(genresA: number[], genresB: number[]): number {
+  if (!genresA.length || !genresB.length) return 0
+  return genresA.filter((g) => genresB.includes(g)).length
+}
+
+function extractFranchiseName(title: string): string {
+  return title
+    .replace(/[0-9]+/g, "")
+    .replace(/\s+(I|II|III|IV|V|VI|VII|VIII|IX|X)(\s+|$)/i, "")
+    .replace(/:\s+.*$/g, "")
+    .replace(/\s+-\s+.*$/g, "")
+    .replace(/\s+(part|chapter|episode)\s+.*$/i, "")
+    .trim()
+    .toLowerCase()
+}
+
+function isSameFranchise(titleA: string, titleB: string): boolean {
+  const a = extractFranchiseName(titleA)
+  const b = extractFranchiseName(titleB)
+  if (!a || !b || a.length < 4 || b.length < 4) return false
+  return a.includes(b) || b.includes(a)
+}
+
 export function RelatedReviews({ currentMovieId, currentMovieTitle, currentMovieGenres = [] }: RelatedReviewsProps) {
   const [relatedReviews, setRelatedReviews] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [shouldFetch, setShouldFetch] = useState(false)
+  const sectionRef = useRef<HTMLDivElement>(null)
   const supabase = createClient()
   const router = useRouter()
 
-  // ID utilisateur spécifique pour les critiques Qojim
-  const QOJIM_USER_ID = "bc6efc17-35eb-4a59-af6c-8c4e3fcddf86"
-
-  // Utiliser le hook de cache pour les requêtes API
-  const { data: genreRecommendations } = useApiCache(
-    currentMovieId ? `/api/tmdb/genre-recommendations/${currentMovieId}` : null,
-    undefined,
-    30 * 60 * 1000, // Cache de 30 minutes
-  )
-
-  const { data: relatedMovies } = useApiCache(
-    currentMovieId ? `/api/tmdb/related/${currentMovieId}` : null,
-    undefined,
-    30 * 60 * 1000, // Cache de 30 minutes
-  )
-
-  // Mémoriser la fonction d'extraction du nom de franchise
-  const extractFranchiseName = useCallback((title: string): string => {
-    // Supprimer les numéros, les chiffres romains, et les suffixes courants
-    const cleanTitle = title
-      .replace(/[0-9]+/g, "") // Supprimer les chiffres
-      .replace(/\s+(I|II|III|IV|V|VI|VII|VIII|IX|X)(\s+|$)/i, "") // Supprimer les chiffres romains
-      .replace(/:\s+.*$/g, "") // Supprimer tout ce qui suit un deux-points
-      .replace(/\s+-\s+.*$/g, "") // Supprimer tout ce qui suit un tiret
-      .replace(/\s+part\s+.*$/i, "") // Supprimer "Part X"
-      .replace(/\s+chapter\s+.*$/i, "") // Supprimer "Chapter X"
-      .replace(/\s+episode\s+.*$/i, "") // Supprimer "Episode X"
-      .replace(/\s+the\s+.*$/i, "") // Supprimer "The X" (comme dans "The Beginning")
-      .trim()
-
-    return cleanTitle
-  }, [])
-
-  // Mémoriser le nom de base de la franchise
-  const baseFranchiseName = useMemo(() => {
-    return extractFranchiseName(currentMovieTitle)
-  }, [currentMovieTitle, extractFranchiseName])
-
-  // Fonction utilitaire pour compléter jusqu'à 5 critiques avec des critiques aléatoires
-  const completeWithRandomReviews = useCallback((selectedReviews: any[], allReviews: any[], targetCount = 5) => {
-    if (selectedReviews.length >= targetCount) {
-      return selectedReviews.slice(0, targetCount)
-    }
-
-    // Créer un ensemble des IDs déjà sélectionnés
-    const selectedIds = new Set(selectedReviews.map((review) => review.id))
-
-    // Filtrer les critiques qui ne sont pas déjà sélectionnées
-    const availableReviews = allReviews.filter((review) => !selectedIds.has(review.id))
-
-    // Mélanger les critiques disponibles
-    const shuffledReviews = [...availableReviews].sort(() => 0.5 - Math.random())
-
-    // Ajouter des critiques aléatoires jusqu'à atteindre le nombre cible
-    const additionalReviews = shuffledReviews.slice(0, targetCount - selectedReviews.length)
-
-    return [...selectedReviews, ...additionalReviews]
+  // Ne lancer le fetch que quand la section entre dans le viewport
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setShouldFetch(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: "200px" } // Commence à charger 200px avant d'arriver à la section
+    )
+    if (sectionRef.current) observer.observe(sectionRef.current)
+    return () => observer.disconnect()
   }, [])
 
   useEffect(() => {
     const fetchRelatedReviews = async () => {
-      if (!currentMovieId) return
+      if (!currentMovieId || !shouldFetch) return
 
       try {
         setLoading(true)
 
-        // 1. Récupérer toutes les critiques Qojim en utilisant l'ID utilisateur spécifique
-        const { data: allQojimReviews, error: reviewsError } = await supabase
+        // 1. Récupérer toutes les critiques Qojim sauf le film actuel
+        const { data: allReviews, error } = await supabase
           .from("reviews")
           .select("*")
-          .eq("user_id", QOJIM_USER_ID) // Utiliser l'ID utilisateur spécifique
+          .eq("user_id", QOJIM_USER_ID)
           .neq("movie_tmdb_id", currentMovieId)
           .order("created_at", { ascending: false })
 
-        if (reviewsError) {
-          console.error("Error fetching Qojim reviews:", reviewsError)
-          return
+        if (error || !allReviews || allReviews.length === 0) return
+
+        // 2. Détection de franchise sur TOUTES les critiques (pas de limite, pas d'API call)
+        const franchiseMatches = allReviews.filter((r) =>
+          isSameFranchise(currentMovieTitle, r.movie_title)
+        )
+        const franchiseIds = new Set(franchiseMatches.map((r) => r.id))
+
+        // 3. Récupérer les genres du film actuel si pas déjà dispo
+        let currentGenres = currentMovieGenres
+        if (!currentGenres.length) {
+          currentGenres = await fetchMovieGenres(currentMovieId)
         }
 
-        if (!allQojimReviews || allQojimReviews.length === 0) {
-          console.log("No Qojim reviews found")
-          return
-        }
+        // 4. Genre scoring sur les 25 critiques les plus récentes hors franchise
+        const nonFranchise = allReviews.filter((r) => !franchiseIds.has(r.id)).slice(0, 25)
+        const genreResults = await Promise.all(
+          nonFranchise.map((r) => fetchMovieGenres(r.movie_tmdb_id))
+        )
 
-        // PRIORITÉ 1: Filtrer pour trouver les critiques de la même franchise
-        let franchiseReviews: any[] = []
-        if (baseFranchiseName && baseFranchiseName.length > 3) {
-          // Éviter les titres trop courts
-          franchiseReviews = allQojimReviews.filter((review) => {
-            const reviewFranchiseName = extractFranchiseName(review.movie_title)
-            // Vérifier si les noms de franchise correspondent (insensible à la casse)
-            return (
-              reviewFranchiseName.toLowerCase().includes(baseFranchiseName.toLowerCase()) ||
-              baseFranchiseName.toLowerCase().includes(reviewFranchiseName.toLowerCase())
-            )
-          })
+        const genreScored = nonFranchise
+          .map((review, i) => ({
+            ...review,
+            _score: genreOverlapScore(currentGenres, genreResults[i]) * 10,
+          }))
+          .sort((a, b) => b._score - a._score)
 
-          // Exclure le film actuel si par hasard il est inclus
-          franchiseReviews = franchiseReviews.filter(
-            (review) => review.movie_tmdb_id !== currentMovieId && review.movie_title !== currentMovieTitle,
-          )
+        // 5. Franchise en premier, puis par genre, compléter si besoin
+        const combined = [...franchiseMatches, ...genreScored]
+        const seen = new Set<string>()
+        const deduped = combined.filter((r) => {
+          if (seen.has(r.id)) return false
+          seen.add(r.id)
+          return true
+        })
 
-          if (franchiseReviews.length > 0) {
-            console.log(`Found ${franchiseReviews.length} reviews from the same franchise: ${baseFranchiseName}`)
+        const top5 = deduped.slice(0, 5)
+        const topIds = new Set(top5.map((r) => r.id))
+        const remaining = allReviews.filter((r) => !topIds.has(r.id))
+        const final = top5.length < 5
+          ? [...top5, ...remaining.slice(0, 5 - top5.length)]
+          : top5
 
-            // Si nous avons trouvé des critiques de la même franchise, les utiliser et compléter si nécessaire
-            const finalReviews = completeWithRandomReviews(franchiseReviews, allQojimReviews)
-            setRelatedReviews(finalReviews)
-            setLoading(false)
-            return
-          }
-        }
+        setRelatedReviews(final)
 
-        // PRIORITÉ 2: Utiliser les recommandations basées sur les genres
-        if (genreRecommendations?.results && genreRecommendations.results.length > 0) {
-          // Extraire les IDs des films similaires
-          const similarMovieIds = genreRecommendations.results.map((movie: any) => movie.id.toString())
-
-          // Filtrer les critiques Qojim pour les films similaires
-          const genreBasedReviews = allQojimReviews.filter((review) => similarMovieIds.includes(review.movie_tmdb_id))
-
-          if (genreBasedReviews.length > 0) {
-            console.log(`Found ${genreBasedReviews.length} reviews for movies with similar genres`)
-
-            // Trier les critiques en fonction de l'ordre des films similaires dans l'API
-            const sortedGenreReviews = genreBasedReviews.sort((a, b) => {
-              const indexA = similarMovieIds.indexOf(a.movie_tmdb_id)
-              const indexB = similarMovieIds.indexOf(b.movie_tmdb_id)
-              return indexA - indexB
-            })
-
-            // Utiliser les critiques basées sur les genres et compléter si nécessaire
-            const finalReviews = completeWithRandomReviews(sortedGenreReviews, allQojimReviews)
-            setRelatedReviews(finalReviews)
-            setLoading(false)
-            return
-          }
-        }
-
-        // PRIORITÉ 3: Utiliser les recommandations TMDB standard
-        if (relatedMovies) {
-          // Extraire les IDs des films similaires et recommandés
-          let similarMovieIds: string[] = []
-
-          if (relatedMovies.similar && relatedMovies.similar.length > 0) {
-            similarMovieIds = [...similarMovieIds, ...relatedMovies.similar.map((m: any) => m.id.toString())]
-          }
-
-          if (relatedMovies.recommendations && relatedMovies.recommendations.length > 0) {
-            // Ajouter uniquement les IDs qui ne sont pas déjà dans similarMovieIds
-            relatedMovies.recommendations.forEach((movie: any) => {
-              const id = movie.id.toString()
-              if (!similarMovieIds.includes(id)) {
-                similarMovieIds.push(id)
-              }
-            })
-          }
-
-          // Filtrer les critiques Qojim pour les films similaires
-          const similarReviews = allQojimReviews.filter((review) => similarMovieIds.includes(review.movie_tmdb_id))
-
-          if (similarReviews.length > 0) {
-            console.log(`Found ${similarReviews.length} reviews for similar movies via TMDB API`)
-
-            // Utiliser les critiques de films similaires et compléter si nécessaire
-            const finalReviews = completeWithRandomReviews(similarReviews, allQojimReviews)
-            setRelatedReviews(finalReviews)
-            setLoading(false)
-            return
-          }
-        }
-
-        // PRIORITÉ 4: Fallback - sélectionner 5 critiques au hasard
-        console.log("No related reviews found, selecting random reviews")
-        // Mélanger le tableau pour obtenir des critiques aléatoires
-        const shuffledReviews = [...allQojimReviews].sort(() => 0.5 - Math.random())
-        setRelatedReviews(shuffledReviews.slice(0, 5))
       } catch (error) {
         console.error("Error in fetchRelatedReviews:", error)
-        // En cas d'erreur, essayer de récupérer 5 critiques aléatoires
-        try {
-          const { data: randomReviews } = await supabase
-            .from("reviews")
-            .select("*")
-            .eq("user_id", QOJIM_USER_ID) // Utiliser l'ID utilisateur spécifique
-            .neq("movie_tmdb_id", currentMovieId)
-            .limit(5)
-            .order("created_at", { ascending: false })
-
-          setRelatedReviews(randomReviews || [])
-        } catch (fallbackError) {
-          console.error("Error fetching fallback reviews:", fallbackError)
-        }
       } finally {
         setLoading(false)
       }
     }
 
     fetchRelatedReviews()
-  }, [
-    currentMovieId,
-    currentMovieTitle,
-    baseFranchiseName,
-    extractFranchiseName,
-    completeWithRandomReviews,
-    supabase,
-    genreRecommendations,
-    relatedMovies,
-  ])
+  }, [currentMovieId, currentMovieTitle, currentMovieGenres, supabase, shouldFetch])
 
-  // Fonction pour gérer la navigation avec défilement vers le haut
   const handleNavigation = useCallback(
     (movieId: string) => {
-      // Stocker l'ID du film dans le localStorage pour indiquer qu'un défilement est nécessaire
       localStorage.setItem("scrollToTop", "true")
-      // Naviguer vers la page du film
       router.push(`/movies/${movieId}`)
     },
     [router],
   )
 
-  // Précharger les images au survol
   const handlePosterHover = useCallback((posterPath: string) => {
     if (posterPath) {
       const img = new Image()
@@ -249,33 +164,31 @@ export function RelatedReviews({ currentMovieId, currentMovieTitle, currentMovie
     }
   }, [])
 
-  if (loading) {
+  if (loading || (!shouldFetch && relatedReviews.length === 0)) {
     return (
-      <div className="py-4">
+      <div ref={sectionRef} className="py-4">
         <h2 className="text-2xl font-bold mb-4">Autres critiques Qojim</h2>
         <div className="space-y-4 md:hidden">
-          {[...Array(3)].map((_, index) => (
-            <div key={index} className="bg-gray-800 rounded-lg h-24 animate-pulse"></div>
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="bg-gray-800 rounded-lg h-24 animate-pulse" />
           ))}
         </div>
         <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 animate-pulse">
-          {[...Array(5)].map((_, index) => (
-            <div key={index} className="bg-gray-800 rounded-lg h-64"></div>
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="bg-gray-800 rounded-lg h-64" />
           ))}
         </div>
       </div>
     )
   }
 
-  if (relatedReviews.length === 0) {
-    return null
-  }
+  if (relatedReviews.length === 0) return <div ref={sectionRef} />
 
   return (
-    <section className="py-8 border-t border-gray-800">
+    <section ref={sectionRef} className="py-8 border-t border-gray-800">
       <h2 className="text-2xl font-bold mb-6">Autres critiques Qojim qui pourraient vous intéresser</h2>
 
-      {/* Version mobile: affichage en liste */}
+      {/* Mobile */}
       <div className="md:hidden space-y-4">
         {relatedReviews.map((review) => (
           <div
@@ -310,7 +223,7 @@ export function RelatedReviews({ currentMovieId, currentMovieTitle, currentMovie
         ))}
       </div>
 
-      {/* Version desktop: affichage en grille */}
+      {/* Desktop */}
       <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
         {relatedReviews.map((review) => (
           <div

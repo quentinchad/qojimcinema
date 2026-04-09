@@ -16,6 +16,7 @@ export async function POST(req: Request) {
         users,
         movieTitle,
         movieUrl,
+        moviePosterPath,
         rating,
         content,
       }),

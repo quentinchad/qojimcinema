@@ -142,11 +142,20 @@ export function AddMovieReviewForm({
 // 🔥 AJOUT ICI
 if (userData?.is_qojim) {
   try {
-    // récupérer tous les users sauf toi
+    // Récupérer les IDs des utilisateurs abonnés à la newsletter
+    const { data: subscribedProfiles } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("newsletter", true)
+
+    const subscribedIds = (subscribedProfiles || []).map((p: any) => p.id)
+
+    // Récupérer les emails des abonnés (sauf Qojim lui-même)
     const { data: users } = await supabase
       .from("users")
       .select("email")
       .neq("email", userData.email)
+      .in("id", subscribedIds)
 
     await fetch("/api/send-review-email", {
       method: "POST",
