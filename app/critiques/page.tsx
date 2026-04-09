@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic"
+
 import { createClient } from "@/lib/supabase/server"
 import { Header } from "@/components/header"
 import { QojimFeedContent } from "@/components/qojim-feed-content"
